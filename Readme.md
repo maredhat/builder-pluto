@@ -67,7 +67,7 @@
 
 ```bash
 # 1. Клонировать
-git clone https://github.com/yourname/pluto-builder.git
+git clone https://github.com/maredhat/pluto-builder.git
 cd pluto-builder
 
 # 2. Проверить окружение
