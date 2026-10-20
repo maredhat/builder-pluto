@@ -1,0 +1,67 @@
+local ui = require "lib.colors"
+
+local M = {}
+
+function M.show(version, opts)
+    print()
+    print(ui.C.bold .. ui.C.blue .. "PLUTO BUILDER " .. version .. ui.C.reset)
+    print([[
+    Создание, сборка, упаковка проектов на Pluto.
+
+  Использование:
+    pluto build.pluto <команда> [--dir <path>] [опции]
+
+  Команды:
+    --new <dir>       создать проект
+    --build           собрать <dir>/<src>/*.pluto → <dir>/<out>/*.luac
+    --run             собрать и запустить main
+    --clean           удалить <dir>/<out>/
+    --watch           автосборка при изменениях
+    --list            показать список файлов к сборке
+    --check           проверить окружение
+    --get-lsp         скачать LSP и plutoc в <dir>/tools/lsp/
+    --bundle          собрать build.pluto + lib/*.pluto → один файл
+    --self-exe        bundle + plutoc + exe в один шаг
+    --exe             собрать standalone .exe (нужен Python 3.8+)
+    --help, -h        справка
+    --version, -v     версия
+
+  Где искать проект (--dir):
+    • явно:   --build --dir "E:\Games\myproj"
+    • неявно: если в этой же команде указан --new / -np — используется он
+    • иначе:  текущая папка "."
+
+  Совместимость:
+    -np <dir> <vscode 0|1> <lsp 0|1>
+
+  Опции для --new:
+    --vscode     .vscode/settings.json
+    --lsp        .vscode/lsp-proxy.json
+    --git        .gitignore, README.md, pluto.json
+    --all        = --vscode --lsp --git
+
+  Опции для --build / --watch:
+    --force      пересобрать всё
+    --verbose    полный вывод plutoc
+
+  Опции для --exe / --self-exe:
+    --exe-name <n>     имя выходного .exe
+    --lua-version <v>  версия Lua (5.1.5-64 или 5.4.6-64)
+
+  Опции для --get-lsp:
+    --lsp-dir <path>   папка для LSP (по умолчанию tools/lsp)
+    --force            перескачать
+
+  Примеры:
+    pluto build.pluto --new myproj --all --build
+    pluto build.pluto -np "E:\TowerDefence\tests\first\" 1 0
+    pluto build.pluto --get-lsp --dir "E:\TowerDefence\tests\first"
+    pluto build.pluto --build   --dir "E:\TowerDefence\tests\first"
+    pluto build.pluto --run     --dir "E:\TowerDefence\tests\first"
+    pluto build.pluto --exe     --dir "E:\TowerDefence\tests\first"
+    pluto build.pluto --self-exe --exe-name builder
+    pluto build.pluto --check
+]])
+end
+
+return M

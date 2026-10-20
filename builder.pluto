@@ -1,0 +1,91 @@
+-- @pluto_warnings: disable-unused
+--[[
+    ============================================================
+                          PLUTO BUILDER v0.6.0
+    ------------------------------------------------------------
+      v0.6.0:
+        • --bundle: собирает build.pluto + lib/*.pluto → один файл
+        • --self-exe: bundle + plutoc + lua-to-exe в один шаг
+        • результат — автономный .exe без lib/ рядом
+
+      v0.5.0:
+        • --get-lsp: скачивает LSP + plutoc в tools/lsp/
+        • автонастройка .vscode/lsp-proxy.json
+        • сборка использует локальный plutoc, если он есть
+        • --lsp-dir, --force для --get-lsp
+
+      v0.4.0:
+        • --exe: standalone .exe через lua-to-exe
+        • автоустановка pip / lua-to-exe
+
+      v0.3.0:
+        • модульная структура
+        • tools/ с .bat-обёртками
+        • pluto.json читается
+        • --watch, --list, --check, --force, --verbose
+
+      Запуск:  pluto build.pluto <команда> [--dir <path>] [опции]
+      Справка: pluto build.pluto --help
+    ============================================================
+]]
+
+local VERSION = "v0.6.0"
+
+-- ===== Bootstrap =====
+
+local _self = (arg and arg[0]) or "build.pluto"
+local _this = _self:match("^(.*)[/\\]") or "."
+
+-- В bundle-режиме lib/ уже встроен: package.preload["lib.colors"] существует.
+-- В обычном режиме проверяем наличие lib/ и даём понятную ошибку.
+if not (package.preload and package.preload["lib.colors"]) then
+    local probe = io.open(_this .. "/lib/colors.pluto", "r")
+    if not probe then
+        io.stderr:write(
+            "\n[PLUTO BUILDER] lib/ not found next to " .. _self .. "\n" ..
+            "  Looking for: " .. _this .. "/lib/colors.pluto\n" ..
+            "  Copy lib/ next to the builder, or run it from its own folder.\n\n"
+        )
+        os.exit(1)
+    end
+    probe:close()
+    package.path = _this .. "/?.pluto;" .. _this .. "/?/init.pluto;" .. package.path
+end
+
+-- ===== Модули =====
+
+local ui   = require "lib.colors"
+local args = require "lib.args"
+local help = require "lib.help"
+local cmd  = require "lib.commands"
+
+local opts = args.parse(arg or {})
+
+if opts.version or opts.v then
+    print("Pluto Builder " .. VERSION)
+    os.exit(0)
+end
+
+local has_cmd =
+    opts.new or opts.build or opts.run or opts.clean or
+    opts.watch or opts.list or opts.check or opts.exe or
+    opts.get_lsp or opts.bundle or opts.self_exe
+
+if opts.help or opts.h or not has_cmd then
+    help.show(VERSION, opts)
+    os.exit(0)
+end
+
+-- ===== Диспетчеризация =====
+
+if opts.check    then cmd.check(opts)    end
+if opts.new      then cmd.new(opts)      end
+if opts.get_lsp  then cmd.get_lsp(opts)  end
+if opts.clean    then cmd.clean(opts)    end
+if opts.list     then cmd.list(opts)     end
+if opts.watch    then cmd.watch(opts)    end
+if opts.bundle   then cmd.bundle(opts)   end
+if opts.self_exe then cmd.self_exe(opts) end
+if opts.build    then cmd.build(opts)    end
+if opts.exe      then cmd.exe(opts)      end
+if opts.run      then cmd.run(opts)      end

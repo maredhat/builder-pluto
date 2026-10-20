@@ -1,0 +1,394 @@
+local fs      = require "lib.fs"
+local ui      = require "lib.colors"
+local T       = require "lib.templates"
+local tools   = require "lib.tools"
+local project = require "lib.project"
+
+local M = {}
+
+local function project_dir(opts)
+    local d = opts.dir
+    if type(d) ~= "string" then d = nil end
+    return fs.norm(d or opts.new or ".")
+end
+
+-- Локальный plutoc (tools/lsp/plutoc.exe) приоритетнее глобального.
+local function plutoc_cmd(root)
+    local local_bin = fs.join(root, "tools/lsp/plutoc.exe")
+    if fs.exists(local_bin) then return '"' .. local_bin .. '"' end
+    return "plutoc"
+end
+
+-- ===== --check =====
+
+function M.check(opts)
+    ui.head("check")
+
+    if fs.has_tool("pluto") then ui.ok("pluto") else ui.err("pluto не найден в PATH") end
+
+    local root = project_dir(opts)
+    local local_plutoc = fs.join(root, "tools/lsp/plutoc.exe")
+    if fs.exists(local_plutoc) then
+        ui.ok("plutoc: локальный (" .. local_plutoc .. ")")
+    elseif fs.has_tool("plutoc") then
+        ui.ok("plutoc: глобальный (PATH)")
+    else
+        ui.err("plutoc не найден — запустите --get-lsp")
+    end
+
+    local local_lsp = fs.join(root, "tools/lsp/pluto-language-server.exe")
+    if fs.exists(local_lsp) then
+        ui.ok("pluto-language-server: локальный")
+    elseif fs.has_tool("pluto-language-server") then
+        ui.ok("pluto-language-server: глобальный")
+    else
+        ui.warn("pluto-language-server не найден — запустите --get-lsp")
+    end
+
+    for _, cmdname in ipairs({ "python", "py" }) do
+        local pipe = io.popen(cmdname .. " --version 2>&1")
+        if pipe then
+            local out = pipe:read("*a") or ""
+            pipe:close()
+            if out:match("%d+%.%d+") then
+                ui.ok("python: " .. out:gsub("%s+$", ""))
+                return
+            end
+        end
+    end
+    ui.warn("python не найден (--exe не заработает)")
+end
+
+-- ===== --new =====
+
+function M.new(opts)
+    local dir = fs.norm(opts.new)
+    if not dir or dir == "." or dir == "" then
+        ui.err("--new требует имя директории")
+        os.exit(1)
+    end
+
+    ui.head("new: " .. dir)
+
+    local cfg = project.default()
+    for _, d in ipairs({ dir, fs.join(dir, cfg.out_dir), fs.join(dir, cfg.src_dir), fs.join(dir, cfg.lib_dir) }) do
+        fs.mkdir(d); ui.ok("mkdir " .. d)
+    end
+
+    fs.write(fs.join(dir, "src/main.pluto"), T.main)
+    ui.ok("src/main.pluto")
+
+    tools.install(dir)
+
+    if opts.vscode or opts.all then
+        fs.mkdir(fs.join(dir, ".vscode"))
+        fs.write(fs.join(dir, ".vscode/settings.json"), T.vscode_settings)
+        ui.ok(".vscode/settings.json")
+        if opts.lsp or opts.all then
+            fs.write(fs.join(dir, ".vscode/lsp-proxy.json"), T.lsp_proxy)
+            ui.ok(".vscode/lsp-proxy.json")
+        end
+    end
+
+    if opts.git or opts.all then
+        fs.write(fs.join(dir, ".gitignore"), T.gitignore);  ui.ok(".gitignore")
+        fs.write(fs.join(dir, "README.md"), T.readme);      ui.ok("README.md")
+        fs.write(fs.join(dir, "pluto.json"), T.pluto_json); ui.ok("pluto.json")
+    end
+
+    if not (opts.build or opts.run or opts.exe or opts.get_lsp) then
+        print()
+        ui.info("готово. дальше:")
+        print('    cd "' .. dir .. '"')
+        print("    tools\\get-lsp.bat")
+        print("    tools\\build.bat")
+    end
+end
+
+-- ===== --list =====
+
+function M.list(opts)
+    local root = project_dir(opts)
+    local cfg  = project.load(root)
+    local src  = fs.join(root, opts.src or cfg.src_dir)
+    local files = fs.list_pluto(src)
+
+    ui.head("list  " .. ui.C.dim .. src .. ui.C.reset)
+    if #files == 0 then
+        ui.warn("пусто")
+        return
+    end
+    for _, f in ipairs(files) do
+        local base = f:match("([^/\\]+)$")
+        ui.ok(base)
+    end
+end
+
+-- ===== --build =====
+
+local function compile_one(src_file, dst_file, opts, root)
+    local log = ".plutoc.log"
+    os.remove(log)
+    os.remove("plutoc.out")
+
+    os.execute(plutoc_cmd(root) .. ' "' .. src_file .. '" > "' .. log .. '" 2>&1')
+
+    local ok  = fs.exists("plutoc.out")
+    local out = fs.read(log) or ""
+    os.remove(log)
+
+    if opts.verbose and out ~= "" then ui.dim(out) end
+
+    if ok then
+        fs.rmfile(dst_file)
+        os.rename("plutoc.out", dst_file)
+        return true, out
+    end
+    return false, out
+end
+
+function M.build(opts)
+    local root = project_dir(opts)
+    local cfg  = project.load(root)
+    local src  = fs.join(root, opts.src or cfg.src_dir)
+    local out  = fs.join(root, opts.out or cfg.out_dir)
+
+    ui.head("build  " .. ui.C.dim .. root .. ui.C.reset)
+    fs.mkdir(out)
+
+    local files = fs.list_pluto(src)
+    if #files == 0 then
+        ui.warn("в " .. src .. " нет .pluto файлов")
+        return
+    end
+
+    local t0, failed, built, skipped = os.clock(), 0, 0, 0
+
+    for _, f in ipairs(files) do
+        local base = f:match("([^/\\]+)$")
+        local name = base:gsub("%.pluto$", "")
+        local dst  = fs.join(out, name .. ".luac")
+
+        if not opts.force and fs.exists(dst) then
+            skipped = skipped + 1
+        else
+            local ok, log = compile_one(f, dst, opts, root)
+            if ok then
+                built = built + 1
+                ui.ok(name .. " → " .. dst)
+            else
+                failed = failed + 1
+                ui.err(name .. " failed")
+                if log ~= "" then ui.dim(log) end
+            end
+        end
+    end
+
+    local dt = os.clock() - t0
+    print()
+    if skipped > 0 then ui.info($"пропущено (есть .luac): {skipped}") end
+    if built   > 0 then ui.info($"собрано: {built}") end
+    if failed  > 0 then
+        ui.err($"ошибок: {failed}")
+        os.exit(1)
+    end
+    ui.info(string.format("время: %.2fs", dt))
+end
+
+-- ===== --clean =====
+
+function M.clean(opts)
+    local root = project_dir(opts)
+    local cfg  = project.load(root)
+    local out  = fs.join(root, opts.out or cfg.out_dir)
+    ui.head("clean  " .. ui.C.dim .. out .. ui.C.reset)
+    fs.rmdir(out)
+    ui.ok("удалено: " .. out)
+end
+
+-- ===== --watch =====
+
+function M.watch(opts)
+    local root = project_dir(opts)
+    local cfg  = project.load(root)
+    local src  = fs.join(root, opts.src or cfg.src_dir)
+
+    if not fs.exists(src) then
+        ui.err("не найдена " .. src)
+        os.exit(1)
+    end
+
+    ui.head("watch  " .. ui.C.dim .. src .. ui.C.reset)
+    ui.info("Ctrl+C для остановки")
+    M.build(opts)
+
+    local last = fs.signature(src)
+    while true do
+        os.sleep(2)
+        local sig = fs.signature(src)
+        if sig ~= last then
+            print()
+            ui.info("изменения обнаружены, пересборка...")
+            M.build(opts)
+            last = sig
+        end
+    end
+end
+
+-- ===== --get-lsp =====
+
+function M.get_lsp(opts)
+    local lsp = require "lib.lsp"
+    local root = project_dir(opts)
+    local ok = lsp.download_all(root, opts)
+    if not ok then os.exit(1) end
+end
+
+-- ===== --bundle =====
+
+function M.bundle(opts)
+    local ok, bundle = pcall(require, "lib.bundle")
+    if not ok then
+        ui.err("--bundle недоступен из bundled .exe")
+        ui.info("Запустите из исходной папки, где лежат билдер и lib/")
+        os.exit(1)
+    end
+
+    local self = (arg and arg[0]) or "build.pluto"
+    local dir  = self:match("^(.*)[/\\]") or "."
+    local name = self:match("([^/\\]+)$") or "build.pluto"
+    local out  = opts.out or "build_bundled.pluto"
+
+    ui.head("bundle  " .. ui.C.dim .. out .. ui.C.reset)
+
+    local ok2, err = pcall(bundle.create, dir, out, name)
+    if not ok2 then
+        ui.err(tostring(err))
+        os.exit(1)
+    end
+
+    ui.ok("создан " .. out)
+    print()
+    ui.info("дальше:")
+    print("    plutoc " .. out)
+    print('    python -c "import lua_to_exe; lua_to_exe.lua_to_exe(\'plutoc.out\', \'builder.exe\')"')
+end
+
+-- ===== --self-exe =====
+
+function M.self_exe(opts)
+    local self = (arg and arg[0]) or "build.pluto"
+    local dir  = self:match("^(.*)[/\\]") or "."
+    local name = self:match("([^/\\]+)$") or "build.pluto"
+
+    -- Из .exe пересобрать себя нельзя — нет lib/ и исходника
+    if name:match("%.exe$") then
+        ui.err("--self-exe недоступен из .exe")
+        ui.info("Запустите из исходной папки, где лежат " .. name .. " и lib/")
+        os.exit(1)
+    end
+
+    local ok, bundle = pcall(require, "lib.bundle")
+    if not ok then
+        ui.err("--self-exe недоступен — нет модуля lib.bundle")
+        os.exit(1)
+    end
+
+    local out = "build_bundled.pluto"
+
+    ui.head("self-exe  " .. ui.C.dim .. "автономный .exe" .. ui.C.reset)
+
+    -- 1. bundle
+    local ok2, err = pcall(bundle.create, dir, out, name)
+    if not ok2 then
+        ui.err(tostring(err))
+        os.exit(1)
+    end
+    ui.ok("bundle: " .. out)
+
+    -- 2. plutoc
+    if not fs.has_tool("plutoc") then
+        ui.err("plutoc не найден — запустите --get-lsp или установите Pluto")
+        os.exit(1)
+    end
+
+    os.remove("plutoc.out")
+    ui.info("компилирую...")
+    local rc = os.execute('plutoc "' .. out .. '"')
+    if not fs.exec_ok(rc) or not fs.exists("plutoc.out") then
+        ui.err("plutoc failed")
+        os.exit(1)
+    end
+    ui.ok("байт-код: plutoc.out")
+
+    -- 3. exe
+    local exe = require "lib.exe"
+    local python = exe.find_python()
+    if not python then
+        ui.err("Python не найден — нужен для lua-to-exe")
+        os.exit(1)
+    end
+    exe.ensure_pip(python)
+    exe.ensure_lua_to_exe(python)
+
+    local dst = opts.exe_name or "builder.exe"
+    dst = dst:gsub("%.exe$", "") .. ".exe"
+    ui.info("упаковываю → " .. dst)
+    local ok3, log = exe.convert(python, "plutoc.out", dst, opts.lua_version)
+    if not ok3 then
+        ui.err("lua-to-exe failed")
+        if log and log ~= "" then ui.dim(log) end
+        os.exit(1)
+    end
+
+    os.remove("plutoc.out")
+    ui.ok("готово: " .. dst)
+    print()
+    ui.info("этот .exe не требует lib/ рядом — всё встроено")
+end
+
+-- ===== --exe =====
+
+function M.exe(opts)
+    local exe = require "lib.exe"
+    local root = project_dir(opts)
+    local cfg  = project.load(root)
+    local ok   = exe.build(opts, root, cfg)
+    if not ok then os.exit(1) end
+end
+
+-- ===== --run =====
+
+function M.run(opts)
+    if opts.exe then
+        M.exe(opts)
+        local root = project_dir(opts)
+        local cfg  = project.load(root)
+        local exe_name = (opts.exe_name or cfg.name or "app") .. ".exe"
+        local exe_path = fs.join(root, exe_name)
+        ui.head("run  " .. ui.C.dim .. exe_path .. ui.C.reset)
+        if not fs.exists(exe_path) then
+            ui.err("не найден " .. exe_path)
+            os.exit(1)
+        end
+        local done = os.execute('"' .. exe_path .. '"')
+        os.exit(done and 0 or 1)
+    end
+
+    M.build(opts)
+    local root = project_dir(opts)
+    local cfg  = project.load(root)
+    local out  = fs.join(root, opts.out or cfg.out_dir)
+    local entry_name = (cfg.entry:match("([^/\\]+)$") or "main"):gsub("%.pluto$", ".luac")
+    local entry = fs.join(out, entry_name)
+
+    ui.head("run  " .. ui.C.dim .. entry .. ui.C.reset)
+    if not fs.exists(entry) then
+        ui.err("не найден " .. entry)
+        os.exit(1)
+    end
+    local done = os.execute('pluto "' .. entry .. '"')
+    os.exit(done and 0 or 1)
+end
+
+return M

@@ -1,0 +1,21 @@
+local C = {
+    reset   = "\27[0m",  bold = "\27[1m",  dim = "\27[2m",
+    red     = "\27[31m", green = "\27[32m", yellow = "\27[33m",
+    blue    = "\27[34m", magenta = "\27[35m", cyan = "\27[36m",
+    gray    = "\27[90m",
+}
+
+local M = { C = C }
+
+function M.ok(m)   print(C.green  .. "  ✓ " .. C.reset .. m) end
+function M.info(m) print(C.cyan   .. "  · " .. C.reset .. m) end
+function M.warn(m) print(C.yellow .. "  ! " .. C.reset .. m) end
+function M.err(m)  print(C.red    .. "  ✗ " .. C.reset .. m) end
+function M.dim(m)  print(C.gray   .. m .. C.reset) end
+
+function M.head(m)
+    print()
+    print(C.bold .. C.blue .. "PLUTO BUILDER" .. C.reset .. " · " .. m)
+end
+
+return M

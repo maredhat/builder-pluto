@@ -1,0 +1,107 @@
+local M = {}
+
+function M.exists(p)
+    if io.exists then return io.exists(p) end
+    local f = io.open(p, "r")
+    if f then f:close() return true end
+    return false
+end
+
+function M.mkdir(p)
+    if M.exists(p) then return end
+    if io.mkdir then io.mkdir(p) else os.execute('mkdir "' .. p .. '" 2>nul') end
+end
+
+function M.write(p, content)
+    local f, e = io.open(p, "w")
+    if not f then error("cannot write " .. p .. ": " .. tostring(e)) end
+    f:write(content); f:close()
+end
+
+function M.read(p)
+    local f = io.open(p, "r")
+    if not f then return nil end
+    local c = f:read("*a")
+    f:close()
+    return c
+end
+
+function M.copy(src, dst)
+    local c = M.read(src)
+    if c then M.write(dst, c) return true end
+    return false
+end
+
+function M.copy_dir(src, dst)
+    M.mkdir(dst)
+    os.execute('xcopy "' .. src .. '" "' .. dst .. '" /e /i /y /q >nul 2>&1')
+end
+
+function M.join(a, b)
+    if not a or a == "" then return b end
+    if not b or b == "" then return a end
+    return a:gsub("[\\/]+$", "") .. "/" .. b
+end
+
+function M.norm(p)
+    if type(p) ~= "string" then return p end
+    p = p:gsub('^"', ''):gsub('"$', '')
+    p = p:gsub("[\\/]+$", "")
+    if p == "" then return "." end
+    return p
+end
+
+function M.list_pluto(dir)
+    local out = {}
+    local pipe = io.popen('dir /b "' .. dir .. '\\*.pluto" 2>nul')
+    if pipe then
+        for line in pipe:lines() do
+            if line ~= "" and not line:match("^File Not Found") then
+                out[#out + 1] = M.join(dir, line)
+            end
+        end
+        pipe:close()
+    end
+    return out
+end
+
+function M.rmdir(p)  os.execute('rmdir /s /q "' .. p .. '" 2>nul') end
+function M.rmfile(p) os.remove(p) end
+
+function M.has_tool(name)
+    local pipe = io.popen('where ' .. name .. ' 2>nul')
+    local out = pipe:read("*a") or ""
+    pipe:close()
+    return #out > 2
+end
+
+function M.is_valid_exe(p)
+    local f = io.open(p, "rb")
+    if not f then return false end
+    local magic = f:read(2)
+    f:close()
+    return magic == "MZ"
+end
+
+function M.exec_ok(rc)
+    if rc == true then return true end
+    if type(rc) == "number" then return rc == 0 end
+    return false
+end
+
+function M.signature(dir)
+    local pipe = io.popen(
+        'forfiles /p "' .. dir .. '" /m "*.pluto" /s /c "cmd /c echo @fdate @ftime @file" 2>nul'
+    )
+    local lines = {}
+    if pipe then
+        for line in pipe:lines() do
+            if line ~= "" then lines[#lines + 1] = line end
+        end
+        pipe:close()
+    end
+    table.sort(lines)
+    return table.concat(lines, "\n")
+end
+
+return M

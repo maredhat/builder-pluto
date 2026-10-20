@@ -1,0 +1,353 @@
+-- @pluto_warnings: disable-unused
+--[[
+    Упаковка проекта в standalone .exe через lua-to-exe (Python).
+
+    Поддерживает:
+      • автоустановку pip и lua-to-exe
+      • автоопределение версии Pluto (5.4 или 5.5)
+      • автоподбор версии srlua
+      • автоскачивание srlua для Lua 5.5 с srlua-vc/dist
+      • понятную инструкцию, если версия недоступна
+]]
+
+local fs = require "lib.fs"
+local ui = require "lib.colors"
+
+local M = {}
+
+-- ===== Python-обёртки =====
+
+local PY_CONVERT = [[
+import sys
+import lua_to_exe
+
+src = sys.argv[1]
+dst = sys.argv[2]
+lua_ver = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
+
+if lua_ver:
+    lua_to_exe.lua_to_exe(src, dst, lua_version=lua_ver)
+else:
+    lua_to_exe.lua_to_exe(src, dst)
+
+print("OK")
+]]
+
+local PY_LIST_VERSIONS = [[
+import lua_to_exe
+print("\n".join(lua_to_exe.all_available()))
+]]
+
+local PY_INSTALL_SRLUA = [[
+import sys, os, shutil, lua_to_exe
+pkg = os.path.dirname(lua_to_exe.__file__)
+d = os.path.join(pkg, "srlua", sys.argv[1])
+os.makedirs(d, exist_ok=True)
+shutil.copy2(sys.argv[2], os.path.join(d, "srlua.exe"))
+shutil.copy2(sys.argv[3], os.path.join(d, "srglue.exe"))
+print("OK")
+]]
+
+-- ===== Хелперы =====
+
+local function capture(cmd)
+    local pipe = io.popen(cmd .. " 2>&1")
+    if not pipe then return "", false end
+    local out = pipe:read("*a") or ""
+    pipe:close()
+    return out, true
+end
+
+-- Скачивание через curl с fallback на PowerShell.
+function M._download_file(url, dest)
+    os.remove(dest)
+    if fs.has_tool("curl") then
+        local rc = os.execute('curl -L --fail -o "' .. dest .. '" "' .. url .. '" >nul 2>&1')
+        if fs.exec_ok(rc) and fs.exists(dest) then return true end
+        os.remove(dest)
+    end
+    local ps = 'powershell -NoProfile -Command "Invoke-WebRequest -Uri \'' ..
+               url .. '\' -OutFile \'' .. dest .. '\' -UseBasicParsing"'
+    local rc = os.execute(ps .. ' >nul 2>&1')
+    if fs.exec_ok(rc) and fs.exists(dest) then return true end
+    os.remove(dest)
+    return false
+end
+
+-- ===== Python =====
+
+function M.find_python()
+    for _, cmd in ipairs({ "python", "py" }) do
+        local out, ok = capture(cmd .. " --version")
+        if ok then
+            local ver = out:match("(%d+%.%d+%.%d+)")
+            if ver then return cmd, ver end
+        end
+    end
+    return nil, nil
+end
+
+function M.has_pip(python)
+    local out, ok = capture(python .. " -m pip --version")
+    return ok and out:match("pip %d+") ~= nil
+end
+
+function M.has_lua_to_exe(python)
+    local out, ok = capture(python .. ' -c "import lua_to_exe; print(\'ok\')"')
+    return ok and out:match("ok") ~= nil
+end
+
+function M.ensure_pip(python)
+    if M.has_pip(python) then
+        ui.ok("pip доступен")
+        return true
+    end
+    ui.warn("pip не найден — пробую python -m ensurepip")
+    os.execute(python .. " -m ensurepip --upgrade >nul 2>&1")
+    if M.has_pip(python) then
+        ui.ok("pip установлен")
+        return true
+    end
+    ui.err("не удалось установить pip")
+    ui.info("Установите Python с https://www.python.org/downloads/")
+    return false
+end
+
+function M.ensure_lua_to_exe(python)
+    if M.has_lua_to_exe(python) then
+        ui.ok("lua-to-exe уже установлен")
+        return true
+    end
+    ui.info("устанавливаю lua-to-exe через pip...")
+    local rc = os.execute(python .. " -m pip install --upgrade lua-to-exe")
+    if fs.exec_ok(rc) and M.has_lua_to_exe(python) then
+        ui.ok("lua-to-exe установлен")
+        return true
+    end
+    ui.err("не удалось установить lua-to-exe")
+    ui.info("Попробуйте вручную: " .. python .. " -m pip install lua-to-exe")
+    return false
+end
+
+-- ===== Определение версии Pluto =====
+
+-- Возвращает "5.4" или "5.5" (или nil).
+-- Pluto 0.13.0+ основан на Lua 5.5; более ранние — на 5.4.
+function M.pluto_lua_version()
+    local out, ok = capture("pluto -v")
+    if not ok or not out:match("%d+%.%d+") then
+        out, ok = capture("plutoc -v")
+    end
+    if ok then
+        local pluto_ver = out:match("Pluto (%d+%.%d+%.%d+)")
+        if pluto_ver then
+            local major, minor = pluto_ver:match("(%d+)%.(%d+)")
+            major, minor = tonumber(major), tonumber(minor)
+            if major > 0 or (major == 0 and minor >= 13) then
+                return "5.5"
+            end
+            return "5.4"
+        end
+    end
+    return nil
+end
+
+-- ===== Версии srlua =====
+
+-- Список версий, доступных в текущей установке lua_to_exe.
+function M.get_available_srlua_versions(python)
+    local py_file = "_l2e_list_versions.py"
+    fs.write(py_file, PY_LIST_VERSIONS)
+    local out, ok = capture(python .. ' "' .. py_file .. '"')
+    os.remove(py_file)
+
+    local versions = {}
+    if not ok or out == "" then return versions end
+    for line in out:gmatch("[^\r\n]+") do
+        if line:match("%S") then
+            versions[#versions + 1] = line:match("^%s*(.-)%s*$")
+        end
+    end
+    return versions
+end
+
+-- Пытается скачать srlua для Lua 5.5 из репозитория srlua-vc.
+local function download_srlua_55()
+    local base = "https://raw.githubusercontent.com/oAGoulart/srlua-vc/main/dist"
+    local files = {
+        { url = base .. "/srlua.exe",  dst = "_srlua_55.exe"  },
+        { url = base .. "/srglue.exe", dst = "_srglue_55.exe" },
+    }
+    for _, f in ipairs(files) do
+        if not M._download_file(f.url, f.dst) then
+            os.remove(f.dst)
+            return false
+        end
+    end
+    return true
+end
+
+-- Устанавливает srlua нужной версии. Возвращает true, если версия доступна.
+function M.ensure_srlua_version(python, lua_ver)
+    local available = M.get_available_srlua_versions(python)
+    for _, v in ipairs(available) do
+        if v == lua_ver then return true end
+    end
+
+    -- 5.4.6 встроен в lua-to-exe по умолчанию
+    if lua_ver == "5.4.6-64" then return true end
+
+    -- Для 5.5 пробуем скачать
+    if lua_ver == "5.5.0-64" then
+        ui.info("srlua для Lua 5.5 отсутствует, пробую скачать...")
+        if not download_srlua_55() then
+            ui.err("не удалось скачать srlua для Lua 5.5")
+            ui.info("Готовых бинарников нет. Варианты:")
+            ui.info("  1. Использовать Pluto 0.12.x (основан на Lua 5.4)")
+            ui.info("  2. Собрать srlua из исходников и поместить в")
+            ui.info("     site-packages/lua_to_exe/srlua/5.5.0-64/")
+            return false
+        end
+
+        local py_install = "_l2e_install_srlua.py"
+        fs.write(py_install, PY_INSTALL_SRLUA)
+        local cmd = python .. ' "' .. py_install .. '" "5.5.0-64" "_srlua_55.exe" "_srglue_55.exe"'
+        local out, ok = capture(cmd)
+        os.remove(py_install)
+        os.remove("_srlua_55.exe")
+        os.remove("_srglue_55.exe")
+
+        if ok and out:match("OK") then
+            ui.ok("srlua для Lua 5.5 установлен")
+            return true
+        end
+        ui.err("не удалось установить srlua для Lua 5.5")
+        return false
+    end
+
+    return false
+end
+
+-- ===== Конвертация =====
+
+function M.convert(python, src, dst, lua_ver)
+    local py_file = "_l2e_convert.py"
+    fs.write(py_file, PY_CONVERT)
+
+    -- lua_to_exe ожидает файл с расширением .lua
+    local src_arg = src
+    if not src:match("%.lua$") then
+        src_arg = src .. ".lua"
+        os.remove(src_arg)
+        local ok, err = os.rename(src, src_arg)
+        if not ok then
+            if not fs.copy(src, src_arg) then
+                ui.err("не удалось подготовить " .. src_arg)
+                os.remove(py_file)
+                return false, tostring(err)
+            end
+            os.remove(src)
+        end
+    end
+
+    os.remove(dst)
+    local log = ".lua_to_exe.log"
+    os.remove(log)
+
+    local cmd = python .. ' "' .. py_file .. '" "' .. src_arg .. '" "' .. dst .. '"'
+    if lua_ver then cmd = cmd .. ' "' .. lua_ver .. '"' end
+    cmd = cmd .. ' > "' .. log .. '" 2>&1'
+
+    local rc = os.execute(cmd)
+    local out = fs.read(log) or ""
+    os.remove(log)
+    os.remove(py_file)
+
+    if src_arg ~= src then os.remove(src_arg) end
+
+    if fs.exec_ok(rc) and fs.exists(dst) then
+        return true, out
+    end
+    return false, out
+end
+
+-- ===== Основная точка входа =====
+
+function M.build(opts, project_root, cfg)
+    ui.head("exe  " .. ui.C.dim .. project_root .. ui.C.reset)
+
+    -- 1. Python
+    local python, ver = M.find_python()
+    if not python then
+        ui.err("Python не найден в PATH")
+        ui.info("Установите Python 3.8+ с https://www.python.org/downloads/")
+        return false
+    end
+    ui.ok("Python: " .. python .. " (" .. ver .. ")")
+
+    -- 2. pip
+    if not M.ensure_pip(python) then return false end
+
+    -- 3. lua-to-exe
+    if not M.ensure_lua_to_exe(python) then return false end
+
+    -- 4. Версия srlua
+    local pluto_lua = M.pluto_lua_version()
+    local lua_ver = opts.lua_version
+
+    if not lua_ver then
+        if pluto_lua == "5.5" then
+            lua_ver = "5.5.0-64"
+        elseif pluto_lua == "5.4" then
+            lua_ver = "5.4.6-64"
+        else
+            ui.warn("не удалось определить версию Pluto, использую Lua 5.5")
+            lua_ver = "5.5.0-64"
+        end
+    end
+
+    ui.info("целевая версия srlua: " .. lua_ver)
+
+    if not M.ensure_srlua_version(python, lua_ver) then
+        ui.err("версия srlua " .. lua_ver .. " недоступна")
+        ui.info("Попробуйте: --lua-version 5.4.6-64")
+        return false
+    end
+    ui.ok("srlua " .. lua_ver .. " доступен")
+
+    -- 5. Убеждаемся, что проект собран
+    local out_dir    = fs.join(project_root, opts.out or cfg.out_dir)
+    local entry_name = (cfg.entry:match("([^/\\]+)$") or "main"):gsub("%.pluto$", ".luac")
+    local entry      = fs.join(out_dir, entry_name)
+
+    if not fs.exists(entry) then
+        ui.info("сначала собираю проект...")
+        local self = (arg and arg[0]) or "build.pluto"
+        local rc = os.execute('pluto "' .. self .. '" --build --dir "' .. project_root .. '"')
+        if not fs.exec_ok(rc) or not fs.exists(entry) then
+            ui.err("не удалось собрать " .. entry)
+            return false
+        end
+    end
+
+    -- 6. Имя .exe
+    local base = opts.exe_name or cfg.name or "app"
+    base = base:gsub("%.exe$", "")
+    local exe_path = fs.join(project_root, base .. ".exe")
+
+    -- 7. Конвертация
+    ui.info("упаковываю " .. entry .. " → " .. exe_path)
+    local ok, log = M.convert(python, entry, exe_path, lua_ver)
+    if not ok then
+        ui.err("lua-to-exe завершился с ошибкой")
+        if log and log ~= "" then ui.dim(log) end
+        ui.info("Если ошибка про заголовок байт-кода — проверьте соответствие")
+        ui.info("версии Pluto и srlua. Попробуйте --lua-version 5.4.6-64")
+        return false
+    end
+
+    ui.ok("готово: " .. exe_path)
+    return true
+end
+
+return M

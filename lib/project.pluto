@@ -1,0 +1,35 @@
+local fs = require "lib.fs"
+
+local M = {}
+
+local function defaults()
+    return {
+        name    = "project",
+        version = "0.1.0",
+        entry   = "src/main.pluto",
+        src_dir = "src",
+        out_dir = "bin",
+        lib_dir = "lib",
+        target  = "pluto",
+    }
+end
+
+function M.default() return defaults() end
+
+function M.load(dir)
+    local cfg  = defaults()
+    local path = fs.join(dir, "pluto.json")
+    local raw  = fs.read(path)
+    if not raw then return cfg end
+
+    local ok, json = pcall(require, "pluto:json")
+    if not ok then return cfg end
+
+    local ok2, data = pcall(json.decode, raw)
+    if not ok2 or type(data) ~= "table" then return cfg end
+
+    for k, v in pairs(data) do cfg[k] = v end
+    return cfg
+end
+
+return M

@@ -1,0 +1,50 @@
+local fs = require "lib.fs"
+local ui = require "lib.colors"
+local T  = require "lib.templates"
+
+local M = {}
+
+function M.install(project_dir)
+    local tools = fs.join(project_dir, "tools")
+    fs.mkdir(tools)
+    ui.ok("tools/")
+
+    local files = {
+        ["README.md"]   = T.tools_readme,
+        ["build.bat"]   = T.bat_build,
+        ["run.bat"]     = T.bat_run,
+        ["clean.bat"]   = T.bat_clean,
+        ["watch.bat"]   = T.bat_watch,
+        ["exe.bat"]     = T.bat_exe,
+        ["get-lsp.bat"] = T.bat_get_lsp,
+        ["lsp.bat"]     = T.bat_lsp,
+    }
+    for name, content in pairs(files) do
+        fs.write(fs.join(tools, name), content)
+        ui.ok("tools/" .. name)
+    end
+
+    local self_path = (arg and arg[0]) or "build.pluto"
+    local self_dir  = self_path:match("^(.*)[/\\]") or "."
+
+    -- В bundle-режиме lib/ встроен: копируем только .exe (arg[0]).
+    -- В обычном — копируем build.pluto и lib/.
+    if package.preload and package.preload["lib.colors"] then
+        if fs.exists(self_path) then
+            fs.copy(self_path, fs.join(tools, "build.pluto"))
+            ui.ok("tools/build.pluto (bundle-копия)")
+        end
+    else
+        if fs.exists(self_path) then
+            fs.copy(self_path, fs.join(tools, "build.pluto"))
+            ui.ok("tools/build.pluto")
+        end
+        local lib_src = fs.join(self_dir, "lib")
+        if fs.exists(lib_src) then
+            fs.copy_dir(lib_src, fs.join(tools, "lib"))
+            ui.ok("tools/lib/ (копия модулей)")
+        end
+    end
+end
+
+return M

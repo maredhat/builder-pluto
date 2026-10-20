@@ -1,0 +1,181 @@
+local M = {}
+
+M.main = [[
+--    ============================================================
+--                          PLUTO BUILDER
+--    ------------------------------------------------------------
+--      Сборка проекта выполняется синхронно с LSP.
+--      Первая версия (v0.1.0).
+--    ============================================================
+
+print("Hello from Pluto!")
+]]
+
+M.lsp_proxy = [[
+[
+  {
+    "languageId": "pluto",
+    "command": "pluto-language-server",
+    "fileExtensions": [".pluto"],
+    "transport": "tcp",
+    "tcpPort": 9170
+  }
+]
+]]
+
+M.vscode_settings = [[
+{
+  "files.associations": { "*.pluto": "pluto" },
+  "editor.tabSize": 4,
+  "editor.insertSpaces": true
+}
+]]
+
+M.gitignore = [[
+bin/
+plutoc.out
+*.log
+.vscode/lsp-proxy.json
+tools/lib/
+tools/build.pluto
+tools/lsp/
+*.exe
+__pycache__/
+build_bundled.pluto
+]]
+
+M.readme = [[
+# Project
+
+Создано с помощью **Pluto Builder**.
+
+## Структура
+
+    bin/        — собранный байт-код (не коммитится)
+    src/        — исходники .pluto
+    lib/        — общие модули .pluto
+    tools/      — скрипты + локальная копия билдера и LSP
+    .vscode/    — конфигурация редактора
+
+## Быстрый старт
+
+    tools\get-lsp.bat   :: скачать LSP и plutoc (один раз)
+    tools\build.bat     :: собрать
+    tools\run.bat       :: собрать и запустить
+    tools\watch.bat     :: автосборка при изменениях
+    tools\exe.bat       :: собрать standalone .exe (нужен Python 3.8+)
+
+## Конфигурация
+
+Настройки — в `pluto.json`.
+
+## Standalone .exe
+
+    tools\exe.bat
+
+Билдер сам поставит `lua-to-exe` через pip, если его нет.
+]]
+
+M.pluto_json = [[
+{
+  "name": "project",
+  "version": "0.1.0",
+  "entry": "src/main.pluto",
+  "src_dir": "src",
+  "out_dir": "bin",
+  "lib_dir": "lib",
+  "target": "pluto"
+}
+]]
+
+M.tools_readme = [[
+# tools/
+
+Скрипты, локальная копия билдера и LSP.
+
+| Файл | Что делает |
+|---|---|
+| `build.pluto`  | копия Pluto Builder |
+| `build.bat`    | собрать `src/*.pluto` → `bin/*.luac` |
+| `run.bat`      | собрать и запустить `bin/main.luac` |
+| `clean.bat`    | удалить `bin/` |
+| `watch.bat`    | автосборка при изменениях |
+| `exe.bat`      | собрать standalone .exe |
+| `get-lsp.bat`  | скачать LSP + plutoc в `tools/lsp/` |
+| `lsp.bat`      | запустить локальный Language Server |
+| `lib/`         | модули билдера |
+| `lsp/`         | скачанные pluto-language-server.exe и plutoc.exe |
+
+## Требования
+
+- **pluto** в `PATH` (обязательно)
+- **plutoc** в `PATH` — опционально; если нет, используется локальный `tools/lsp/plutoc.exe`
+- **Python 3.8+** — только для `exe.bat`
+]]
+
+M.bat_build = [[
+@echo off
+setlocal
+cd /d "%~dp0.."
+if not defined PLUTO         set "PLUTO=pluto"
+if not defined PLUTO_BUILDER set "PLUTO_BUILDER=%~dp0build.pluto"
+"%PLUTO%" "%PLUTO_BUILDER%" --build --dir .
+]]
+
+M.bat_run = [[
+@echo off
+setlocal
+cd /d "%~dp0.."
+if not defined PLUTO         set "PLUTO=pluto"
+if not defined PLUTO_BUILDER set "PLUTO_BUILDER=%~dp0build.pluto"
+"%PLUTO%" "%PLUTO_BUILDER%" --run --dir .
+]]
+
+M.bat_clean = [[
+@echo off
+setlocal
+cd /d "%~dp0.."
+if not defined PLUTO         set "PLUTO=pluto"
+if not defined PLUTO_BUILDER set "PLUTO_BUILDER=%~dp0build.pluto"
+"%PLUTO%" "%PLUTO_BUILDER%" --clean --dir .
+]]
+
+M.bat_watch = [[
+@echo off
+setlocal
+cd /d "%~dp0.."
+if not defined PLUTO         set "PLUTO=pluto"
+if not defined PLUTO_BUILDER set "PLUTO_BUILDER=%~dp0build.pluto"
+"%PLUTO%" "%PLUTO_BUILDER%" --watch --dir .
+]]
+
+M.bat_exe = [[
+@echo off
+setlocal
+cd /d "%~dp0.."
+if not defined PLUTO         set "PLUTO=pluto"
+if not defined PLUTO_BUILDER set "PLUTO_BUILDER=%~dp0build.pluto"
+"%PLUTO%" "%PLUTO_BUILDER%" --exe --dir .
+]]
+
+M.bat_get_lsp = [[
+@echo off
+setlocal
+cd /d "%~dp0.."
+if not defined PLUTO         set "PLUTO=pluto"
+if not defined PLUTO_BUILDER set "PLUTO_BUILDER=%~dp0build.pluto"
+"%PLUTO%" "%PLUTO_BUILDER%" --get-lsp --dir .
+]]
+
+M.bat_lsp = [[
+@echo off
+setlocal
+if exist "%~dp0lsp\pluto-language-server.exe" (
+    "%~dp0lsp\pluto-language-server.exe"
+) else (
+    echo Local LSP not found. Run tools\get-lsp.bat first.
+    pause
+)
+]]
+
+return M

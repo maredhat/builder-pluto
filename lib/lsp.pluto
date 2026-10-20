@@ -1,0 +1,91 @@
+-- @pluto_warnings: disable-unused
+
+local fs = require "lib.fs"
+local ui = require "lib.colors"
+
+local M = {}
+
+local LSP_URL = "https://github.com/PlutoLang/pluto-language-server/releases/latest/download/pluto-language-server.exe"
+local PLUTOC_URL = "https://github.com/PlutoLang/Pluto/releases/latest/download/plutoc.exe"
+
+local function download(url, dest)
+    os.remove(dest)
+
+    if fs.has_tool("curl") then
+        local rc = os.execute('curl -L --fail -o "' .. dest .. '" "' .. url .. '" >nul 2>&1')
+        if fs.exec_ok(rc) and fs.is_valid_exe(dest) then return true end
+        os.remove(dest)
+    end
+
+    local ps = 'powershell -NoProfile -Command "Invoke-WebRequest -Uri \'' ..
+               url .. '\' -OutFile \'' .. dest .. '\' -UseBasicParsing"'
+    local rc = os.execute(ps .. ' >nul 2>&1')
+    if fs.exec_ok(rc) and fs.is_valid_exe(dest) then return true end
+
+    os.remove(dest)
+    return false
+end
+
+local function write_vscode_config(project_root, lsp_abs)
+    local vscode_dir = fs.join(project_root, ".vscode")
+    fs.mkdir(vscode_dir)
+
+    local path = lsp_abs:gsub("\\", "/")
+    local content = string.format([[
+[
+  {
+    "languageId": "pluto",
+    "command": "%s",
+    "fileExtensions": [".pluto"],
+    "transport": "tcp",
+    "tcpPort": 9170
+  }
+]
+]], path)
+
+    fs.write(fs.join(vscode_dir, "lsp-proxy.json"), content)
+end
+
+function M.download_all(project_root, opts)
+    local dir = fs.join(project_root, opts.lsp_dir or "tools/lsp")
+    fs.mkdir(dir)
+    ui.head("get-lsp  " .. ui.C.dim .. dir .. ui.C.reset)
+
+    local lsp_exe    = fs.join(dir, "pluto-language-server.exe")
+    local plutoc_exe = fs.join(dir, "plutoc.exe")
+
+    if fs.exists(lsp_exe) and not opts.force and fs.is_valid_exe(lsp_exe) then
+        ui.ok("pluto-language-server.exe уже есть")
+    else
+        ui.info("скачиваю pluto-language-server.exe...")
+        if not download(LSP_URL, lsp_exe) then
+            ui.err("не удалось скачать LSP")
+            ui.info("Проверьте сеть или скачайте вручную: " .. LSP_URL)
+            return false
+        end
+        ui.ok("pluto-language-server.exe")
+    end
+
+    if fs.exists(plutoc_exe) and not opts.force and fs.is_valid_exe(plutoc_exe) then
+        ui.ok("plutoc.exe уже есть")
+    else
+        ui.info("скачиваю plutoc.exe...")
+        if not download(PLUTOC_URL, plutoc_exe) then
+            ui.err("не удалось скачать plutoc.exe")
+            ui.info("Проверьте сеть или скачайте вручную: " .. PLUTOC_URL)
+            return false
+        end
+        ui.ok("plutoc.exe")
+    end
+
+    local abs_lsp = fs.join(project_root, opts.lsp_dir or "tools/lsp") .. "/pluto-language-server.exe"
+    write_vscode_config(project_root, abs_lsp)
+    ui.ok(".vscode/lsp-proxy.json → " .. abs_lsp)
+
+    print()
+    ui.info("готово. VS Code будет использовать локальный LSP.")
+    ui.info("Для запуска сервера: tools\\lsp.bat")
+    return true
+end
+
+return M

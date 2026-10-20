@@ -1,0 +1,71 @@
+-- @pluto_warnings: disable-unused
+--[[
+    Собирает <entry> + lib/*.pluto в один файл.
+    Модули встраиваются через package.preload — lib/ рядом не нужна.
+]]
+
+local fs = require "lib.fs"
+
+local M = {}
+
+local MODULES = {
+    "colors", "fs", "args", "project", "templates",
+    "tools", "help", "commands", "exe", "lsp",
+}
+
+local function escape_long_string(s)
+    for n = 0, 20 do
+        local eq    = string.rep("=", n)
+        local close = "]" .. eq .. "]"
+        if not s:find(close, 1, true) then
+            return "[" .. eq .. "[" .. s .. close
+        end
+    end
+    error("cannot embed: too many ]] sequences")
+end
+
+-- builder_dir — папка с lib/ и точкой входа
+-- out_path    — куда писать bundle
+-- entry_name  — имя файла точки входа (по умолчанию "build.pluto")
+function M.create(builder_dir, out_path, entry_name)
+    entry_name = entry_name or "build.pluto"
+
+    -- Проверка lib/ — иначе будет непонятная ошибка на первом модуле
+    local probe = io.open(builder_dir .. "/lib/colors.pluto", "r")
+    if not probe then
+        error("lib/ not found in " .. builder_dir .. " (bundle requires source tree)")
+    end
+    probe:close()
+
+    local parts = {}
+    parts[#parts+1] = "-- AUTO-GENERATED BUNDLE. DO NOT EDIT."
+    parts[#parts+1] = "-- Source: " .. builder_dir .. "/" .. entry_name
+    parts[#parts+1] = "-- Regenerate: pluto " .. entry_name .. " --bundle"
+    parts[#parts+1] = ""
+    parts[#parts+1] = "package.preload = package.preload or {}"
+
+    for _, name in ipairs(MODULES) do
+        local src = fs.read(builder_dir .. "/lib/" .. name .. ".pluto")
+        if not src then
+            error("missing lib/" .. name .. ".pluto in " .. builder_dir)
+        end
+        parts[#parts+1] = string.format(
+            'package.preload["lib.%s"] = function(...)\nreturn %s\nend',
+            name, escape_long_string(src)
+        )
+    end
+
+    local main = fs.read(builder_dir .. "/" .. entry_name)
+    if not main then
+        error("missing " .. entry_name .. " in " .. builder_dir)
+    end
+
+    parts[#parts+1] = ""
+    parts[#parts+1] = "-- ==== " .. entry_name .. " ===="
+    parts[#parts+1] = main
+
+    fs.write(out_path, table.concat(parts, "\n"))
+    return out_path
+end
+
+return M
